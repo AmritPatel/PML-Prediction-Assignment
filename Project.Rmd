@@ -1,0 +1,121 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Amrit D. Patel"
+date: "Thursday, January 22, 2015"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache=TRUE)
+```
+
+### Executive Summary
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants is analyzed. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har) (see the section on the Weight Lifting Exercise Dataset); the data for this project can also be obtained at this website.
+
+A prediction model was built to determine the type of barbell lift (within the 5 classes mentioned above) being performed using 55 different features. The selected model produced an estimated out-of-sample error of ~1% indicating that the model will perform with very high accuracy. However, from examining receiver operating characteristic curves, it is clear that certain barbell lift classes are easier to predict than others.
+
+### Analysis
+
+Set the working directory and load the training data:
+
+```{r, warning=FALSE, message=FALSE}
+library(dplyr)
+library(caret)
+
+setwd("C:/Users/axp13/Dropbox/Coursera/Data Science/Machine Learning")
+pmlTrainPre <- tbl_df(read.csv("pml-training.csv", stringsAsFactors=FALSE))
+pmlTest <- tbl_df(read.csv("pml-testing.csv", stringsAsFactors=FALSE))
+```
+
+Determine the features available for training from the test dataset:
+
+```{r, warning=FALSE, message=FALSE}
+pmlTest <- pmlTest[,colSums(is.na(pmlTest))<nrow(pmlTest)] # remove all columns where all values are 'NA';
+                                                           # assuming these variables aren't useful
+pmlTest <- pmlTest[-60] # remove the 'problem_id' column; only useful for submission phase of this project
+pmlTest <- pmlTest %>% select(-X, -raw_timestamp_part_1, -cvtd_timestamp, -new_window) # remove unneeded descriptive variables
+```
+
+Perform basic data cleaning on training dataset so that it is consistent with the testing dataset:
+
+```{r, warning=FALSE, message=FALSE}
+pmlTrainPre <-
+pmlTrainPre %>% # select the entire dataset
+filter(new_window == "no") %>% # only keep rows ending on the last timestep of the time "window"
+select(-X, -raw_timestamp_part_1, -cvtd_timestamp, -new_window) # remove unneeded descriptive variables
+```
+
+Next, partition the training data into training and validation sets for cross-validation. Although it would be typical to specify the training set to be about 70% of the unpartitioned data (using the remaining data for the validation set), here 30% is specified in order to minimize runtime when fitting the model. It was found that 30% is reasonable after trying runs specifying both 10% and 20% for training set partitions (in-sample accuracy was ~85% and ~92%, respectively). In-sample accuracy increased to ~99% after the training set partition was set to 30%.
+
+```{r, warning=FALSE, message=FALSE}
+inBuild <- createDataPartition(y=pmlTrainPre$classe, p=0.3, list=FALSE) # since the dataset is so large, use only a portion to minimize train runtime
+pmlTrain<- pmlTrainPre[inBuild,] # specify the training data
+pmlVal <- pmlTrainPre[-inBuild,] # specify the validation data
+```
+
+Remove unwanted variables from the training dataset:
+
+```{r, warning=FALSE, message=FALSE}
+classe <- pmlTrain$classe # save the output variable
+pmlTrain <- pmlTrain[, names(pmlTest)] # only keep columns available in testing dataset
+pmlTrain <- tbl_df(cbind(pmlTrain, classe)) # add the output variable back to the dataset since it was removed in last statement
+```
+
+Train a model using random forests:
+
+```{r, warning=FALSE, message=FALSE}
+nzv <- nearZeroVar(pmlTrain, saveMetrics=TRUE) # identify variables that won't be good predictors
+nzv[nzv$nzv==TRUE,] # variables to remove
+```
+
+It looks like including all selected variables has value. Now the model is fit...
+
+```{r, warning=FALSE, message=FALSE}
+modFit <- train(classe ~ ., method="rf", prox=TRUE, data=pmlTrain)
+modFit$finalModel # look at model confusion matrix
+modFit$times # look at execution times
+modImp <- varImp(modFit) # look at variable importances
+plot(modImp, top=20) # plot top variable importances
+```
+
+Let's look at ROC curves for the different classes...
+
+```{r, warning=FALSE, message=FALSE}
+library(pROC) # useful for displaying and analyzing ROC curves
+
+modFitProbs <- predict(modFit, pmlVal, type = "prob") # get prediction probabilities
+
+# Build ROC objects (for each class type) for plotting
+levels(pmlVal$classe) <- c("A", "B", "C", "D", "E") # specify factor levels
+modFitROCa <- roc(predictor = modFitProbs$A, response = pmlVal$classe, levels = rev(levels(pmlVal$classe)))
+modFitROCb <- roc(predictor = modFitProbs$B, response = pmlVal$classe, levels = rev(levels(pmlVal$classe)))
+modFitROCc <- roc(predictor = modFitProbs$C, response = pmlVal$classe, levels = rev(levels(pmlVal$classe)))
+modFitROCd <- roc(predictor = modFitProbs$D, response = pmlVal$classe, levels = rev(levels(pmlVal$classe)))
+modFitROCe <- roc(predictor = modFitProbs$E, response = pmlVal$classe, levels = rev(levels(pmlVal$classe)))
+```
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+par(mfrow=c(2,3))
+plot(modFitROCa, type = "S", main="Class A"); plot(modFitROCb, type = "S", main="Class B")
+plot(modFitROCc, type = "S", main="Class C"); plot(modFitROCd, type = "S", main="Class D")
+plot(modFitROCe, type = "S", main="Class E")
+```
+
+
+It appears that Classes D and E will be the easiest to predict based on the area under the respective curves. Now, perform cross-validation:
+
+```{r, warning=FALSE, message=FALSE}
+pmlVal <- pmlVal[, names(pmlTrain)] # only keep columns available in training dataset
+confMat <- confusionMatrix(table(predict(modFit, pmlVal), pmlVal$classe)) # check accuracy and kappa in the validation set
+confMat
+```
+
+### Conclusion
+
+Although this model took a significant time to train (~1 hour), the ~1% out-of-sample error (see accuracy and kappa in confusion matrix output above) achieved with the relatively large validation set is excellent.
+
+Potential improvements:
+
+- Use variable importances from the plot above to determine a model with fewer variables to make interpretation simpler
+- Explore other prediction models that are less computationally intensive and that could still produce low out-of-sample error
